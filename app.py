@@ -18,7 +18,9 @@ EMISSIONS_FACTORS = {
     }
 }
 
-def calculate_footprint(car_km, bus_km, train_km, air_km, meat_meals, vegetarian_meals, vegan_meals):
+
+def calculate_footprint(car_km, bus_km, train_km, air_km,
+                        meat_meals, vegetarian_meals, vegan_meals):
     transport_emissions = (
         car_km * EMISSIONS_FACTORS["transportation"]["car"] +
         bus_km * EMISSIONS_FACTORS["transportation"]["bus"] +
@@ -42,6 +44,7 @@ def calculate_footprint(car_km, bus_km, train_km, air_km, meat_meals, vegetarian
 
     return total_emissions, stats
 
+
 def respond(
     message,
     history: list[dict[str, str]],
@@ -64,7 +67,7 @@ def respond(
     custom_prompt = f"""
 This user’s estimated weekly footprint is **{footprint:.1f} kg CO2**.
 That’s equivalent to planting about {stats['trees']} trees 🌳 or taking {stats['flights']} short flights ✈️.
-Their breakdown includes both transportation and food habits.  
+Their breakdown includes both transportation and food habits.
 Your job is to guide them with practical, encouraging suggestions to lower this footprint.
 {system_message}
 """
@@ -92,10 +95,12 @@ Your job is to guide them with practical, encouraging suggestions to lower this 
         response += token
         yield response
 
+
 system_prompt = """
 You are Sustainable.ai, a friendly, encouraging, and knowledgeable AI assistant...
 (omit full content for brevity – use your full prompt here)
 """
+
 
 with gr.Blocks(css="""
     body {
@@ -135,7 +140,6 @@ with gr.Blocks(css="""
             train_input = gr.Number(label="🚆 Train Travel (km)", value=0)
             air_input = gr.Number(label="✈️ Air Travel (km/month)", value=0)
 
-  
     with gr.Group(elem_classes="section-card"):
         gr.Markdown("### 🍽️ Food Habits (per week)")
         with gr.Row():
@@ -143,7 +147,6 @@ with gr.Blocks(css="""
             vegetarian_input = gr.Number(label="🥗 Vegetarian Meals", value=0)
             vegan_input = gr.Number(label="🌱 Vegan Meals", value=0)
 
-    
     chatbot = gr.ChatInterface(
         respond,
         type="messages",
