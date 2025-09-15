@@ -14,7 +14,6 @@ def test_respond_function_exists():
 
 def test_respond_returns_generator():
     """respond() should return a generator when called with minimal args."""
-    # Fake OAuthToken object for testing (since we don't want to call real HF API in CI)
     class DummyToken:
         token = "dummy"
 
@@ -28,5 +27,4 @@ def test_respond_returns_generator():
         hf_token=DummyToken(),
     )
 
-    # respond() is a generator, not a plain string
     assert isinstance(gen, types.GeneratorType)
