@@ -26,6 +26,8 @@ jobs:
           pip install pytest
 
       - name: Run tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: pytest --maxfail=1 --disable-warnings -q
 
       - name: Push to Hugging Face
