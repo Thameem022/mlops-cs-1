@@ -2,7 +2,7 @@ import os
 import gradio as gr
 from huggingface_hub import InferenceClient
 
-HF_TOKEN = os.environ["HF_TOKEN"]
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 EMISSIONS_FACTORS = {
     "transportation": {
