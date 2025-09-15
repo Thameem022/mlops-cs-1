@@ -54,7 +54,7 @@ def respond(
     vegetarian_meals,
     vegan_meals,
 ):
-    client = InferenceClient(token=HF_TOKEN)
+    client = InferenceClient(token=HF_TOKEN, model="openai/gpt-oss-20b")
 
     footprint, stats = calculate_footprint(
         car_km, bus_km, train_km, air_km,
