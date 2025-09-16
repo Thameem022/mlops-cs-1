@@ -18,6 +18,7 @@ def test_respond_returns_generator():
     gen = app.respond(
         message="I'm buying a bottle of water.",
         history=[],
+        hf_token_ui="", 
         system_message="You are Sustainable.ai.",
         car_km=10,
         bus_km=0,
