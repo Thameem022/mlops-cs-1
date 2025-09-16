@@ -2,22 +2,11 @@ import os
 import gradio as gr
 from huggingface_hub import InferenceClient
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-
+# --- Emissions factors --------------------------------------------------------
 EMISSIONS_FACTORS = {
-    "transportation": {
-        "car": 2.3,
-        "bus": 0.1,
-        "train": 0.04,
-        "plane": 0.25,
-    },
-    "food": {
-        "meat": 6.0,
-        "vegetarian": 1.5,
-        "vegan": 1.0,
-    }
+    "transportation": {"car": 2.3, "bus": 0.1, "train": 0.04, "plane": 0.25},
+    "food": {"meat": 6.0, "vegetarian": 1.5, "vegan": 1.0},
 }
-
 
 def calculate_footprint(car_km, bus_km, train_km, air_km,
                         meat_meals, vegetarian_meals, vegan_meals):
@@ -27,28 +16,33 @@ def calculate_footprint(car_km, bus_km, train_km, air_km,
         train_km * EMISSIONS_FACTORS["transportation"]["train"] +
         air_km * EMISSIONS_FACTORS["transportation"]["plane"]
     )
-
     food_emissions = (
         meat_meals * EMISSIONS_FACTORS["food"]["meat"] +
         vegetarian_meals * EMISSIONS_FACTORS["food"]["vegetarian"] +
         vegan_meals * EMISSIONS_FACTORS["food"]["vegan"]
     )
-
     total_emissions = transport_emissions + food_emissions
-
     stats = {
-        "trees": round(total_emissions / 21),
-        "flights": round(total_emissions / 500),
-        "driving100km": round(total_emissions / 230),
+        "trees": round(total_emissions / 21),      
+        "flights": round(total_emissions / 500),     
+        "driving100km": round(total_emissions / 230) 
     }
-
     return total_emissions, stats
 
+# --- Default system prompt ----------------------------------------------------
+DEFAULT_SYSTEM_PROMPT = """
+You are Sustainable.ai, a friendly, encouraging, and knowledgeable AI assistant.
+Always provide practical sustainability suggestions that are easy to adopt,
+while keeping a supportive and positive tone. Prefer actionable steps over theory.
+Reasoning: medium
+"""
 
+# --- Chat callback ------------------------------------------------------------
 def respond(
     message,
     history: list[dict[str, str]],
-    system_message,
+    hf_token_ui,          # from password textbox (optional)
+    system_message,       # from textbox
     car_km,
     bus_km,
     train_km,
@@ -57,110 +51,94 @@ def respond(
     vegetarian_meals,
     vegan_meals,
 ):
-    client = InferenceClient(token=HF_TOKEN, model="openai/gpt-oss-20b")
+    """
+    Streams a response from openai/gpt-oss-20b via Hugging Face Inference API.
+    Token priority: UI textbox > HF_TOKEN env var.
+    """
+    # Resolve token from UI or env
+    token = (hf_token_ui or "").strip() or (os.getenv("HF_TOKEN") or "").strip()
+    if not token:
+        yield "⚠️ Please provide a valid Hugging Face token in the 'HF Token' box or set HF_TOKEN in the environment."
+        return
 
+    # Correct, namespaced repo id
+    model_id = "openai/gpt-oss-20b"
+
+    # Build client
+    try:
+        client = InferenceClient(model=model_id, token=token)
+    except Exception as e:
+        yield f"Failed to initialize InferenceClient: {e}"
+        return
+
+    # Compute personalized footprint summary
     footprint, stats = calculate_footprint(
         car_km, bus_km, train_km, air_km,
         meat_meals, vegetarian_meals, vegan_meals
     )
 
-    custom_prompt = f"""
-This user’s estimated weekly footprint is **{footprint:.1f} kg CO2**.
-That’s equivalent to planting about {stats['trees']} trees 🌳 or taking {stats['flights']} short flights ✈️.
-Their breakdown includes both transportation and food habits.
-Your job is to guide them with practical, encouraging suggestions to lower this footprint.
-{system_message}
-"""
+    custom_prompt = (
+        f"This user’s estimated weekly footprint is **{footprint:.1f} kg CO2**.\n"
+        f"That’s roughly planting {stats['trees']} trees 🌳 or taking {stats['flights']} short flights ✈️.\n"
+        f"Breakdown includes transportation and food choices.\n"
+        f"Your job is to give practical, friendly suggestions to lower this footprint.\n"
+        f"{system_message}"
+    )
 
-    max_tokens = 512
-    temperature = 0.7
-    top_p = 0.95
-
+    # Construct messages in OpenAI-style format; providers map this to the model's chat template.
     messages = [{"role": "system", "content": custom_prompt}]
-    messages.extend(history)
+    messages.extend(history or [])
     messages.append({"role": "user", "content": message})
 
-    response = ""
-    for message in client.chat_completion(
-        messages,
-        max_tokens=max_tokens,
-        stream=True,
-        temperature=temperature,
-        top_p=top_p,
-    ):
-        choices = message.choices
-        token = ""
-        if len(choices) and choices[0].delta.content:
-            token = choices[0].delta.content
-        response += token
-        yield response
+    # Stream from HF Inference API
+    try:
+        response = ""
+        for chunk in client.chat_completion(
+            messages,
+            max_tokens=3000,
+            temperature=0.7,
+            top_p=0.95,
+            stream=True,
+        ):
+            try:
+                # Some providers return choices[0].delta.content during streaming
+                if chunk.choices and getattr(chunk.choices[0], "delta", None):
+                    token_piece = chunk.choices[0].delta.content or ""
+                else:
+                    # Fallback: some providers may use 'message' at the end
+                    token_piece = getattr(chunk, "message", {}).get("content", "") or ""
+            except Exception:
+                token_piece = ""
 
+            if token_piece:
+                response += token_piece
+                yield response
+    except Exception as e:
+        # Common causes: 401 (bad token), 404 (wrong repo id), provider downtime
+        yield f"Inference error with '{model_id}': {e}\n"
+        return
 
-system_prompt = """
-You are Sustainable.ai, a friendly, encouraging, and knowledgeable AI assistant...
-(omit full content for brevity – use your full prompt here)
-"""
-
-
-with gr.Blocks(css="""
-    body {
-        background: linear-gradient(135deg, #e0f7fa, #f1f8e9);
-    }
-    .section-card {
-        background: white;
-        padding: 20px;
-        border-radius: 15px;
-        box-shadow: 0px 4px 12px rgba(0,0,0,0.1);
-        margin-bottom: 20px;
-    }
-    .title-text {
-        text-align: center;
-        font-size: 28px;
-        font-weight: bold;
-        color: #2e7d32;
-    }
-    .subtitle-text {
-        text-align: center;
-        font-size: 16px;
-        color: #555;
-        margin-bottom: 20px;
-    }
-""") as demo:
-
-    with gr.Column():
-        gr.HTML("<div class='title-text'>🌍 Eco Wise AI</div>")
-        gr.HTML("<div class='subtitle-text'>Track your weekly habits and chat with your personal sustainability coach 🌱</div>")
-
-    with gr.Group(elem_classes="section-card"):
-        gr.Markdown("### 🚗 Transportation (per week)")
-        with gr.Row():
-            car_input = gr.Number(label="🚘 Car Travel (km)", value=0)
-            bus_input = gr.Number(label="🚌 Bus Travel (km)", value=0)
-        with gr.Row():
-            train_input = gr.Number(label="🚆 Train Travel (km)", value=0)
-            air_input = gr.Number(label="✈️ Air Travel (km/month)", value=0)
-
-    with gr.Group(elem_classes="section-card"):
-        gr.Markdown("### 🍽️ Food Habits (per week)")
-        with gr.Row():
-            meat_input = gr.Number(label="🥩 Meat Meals", value=0)
-            vegetarian_input = gr.Number(label="🥗 Vegetarian Meals", value=0)
-            vegan_input = gr.Number(label="🌱 Vegan Meals", value=0)
-
-    chatbot = gr.ChatInterface(
-        respond,
-        type="messages",
-        additional_inputs=[
-            gr.Textbox(value=system_prompt, visible=False),
-            car_input,
-            bus_input,
-            train_input,
-            air_input,
-            meat_input,
-            vegetarian_input,
-            vegan_input,
-        ],
-    )
+# --- UI -----------------------------------------------------------------------
+demo = gr.ChatInterface(
+    fn=respond,
+    type="messages",  # fixes 'tuples' deprecation warning
+    additional_inputs=[
+        gr.Textbox(label="HF Token (prefer env var HF_TOKEN)", type="password", placeholder="hf_..."),
+        gr.Textbox(value=DEFAULT_SYSTEM_PROMPT, label="System Prompt"),
+        gr.Slider(0, 500, value=50, step=10, label="Car km/week"),
+        gr.Slider(0, 500, value=20, step=10, label="Bus km/week"),
+        gr.Slider(0, 500, value=20, step=10, label="Train km/week"),
+        gr.Slider(0, 5000, value=200, step=50, label="Air km/week"),
+        gr.Slider(0, 21, value=7, step=1, label="Meat meals/week"),
+        gr.Slider(0, 21, value=7, step=1, label="Vegetarian meals/week"),
+        gr.Slider(0, 21, value=7, step=1, label="Vegan meals/week"),
+    ],
+    title="🌱 Sustainable.ai (gpt-oss-20b)",
+    description=(
+        "Chat with an AI that helps you understand and reduce your carbon footprint. "
+        "Provide a Hugging Face token in the UI or via HF_TOKEN. Uses openai/gpt-oss-20b."
+    ),
+)
 
 if __name__ == "__main__":
     demo.launch()
