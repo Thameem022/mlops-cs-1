@@ -8,6 +8,8 @@ if not HF_TOKEN:
     raise RuntimeError("HF_TOKEN not found. In Spaces, add it under Settings → Repository secrets.")
 
 login(token=HF_TOKEN)
+
+
 # --- Emissions factors --------------------------------------------------------
 EMISSIONS_FACTORS = {
     "transportation": {"car": 2.3, "bus": 0.1, "train": 0.04, "plane": 0.25},
@@ -36,7 +38,7 @@ def calculate_footprint(car_km, bus_km, train_km, air_km,
     return total_emissions, stats
 
 # --- Default system prompt ----------------------------------------------------
-DEFAULT_SYSTEM_PROMPT = """
+system_message = """
 You are Sustainable.ai, a friendly, encouraging, and knowledgeable AI assistant.
 Always provide practical sustainability suggestions that are easy to adopt,
 while keeping a supportive and positive tone. Prefer actionable steps over theory.
@@ -50,7 +52,6 @@ pipe = pipeline("text-generation", model="google/gemma-3-270m-it")
 def respond(
     message,
     history: list[dict[str, str]],
-    system_message,
     car_km,
     bus_km,
     train_km,
@@ -87,14 +88,8 @@ def respond(
         yield out[0]["generated_text"]
         return
 
-    # --- Remote branch --------------------------------------------------------
-    token = (hf_token_ui or "").strip() or (os.getenv("HF_TOKEN") or "").strip()
-    if not token:
-        yield "⚠️ Please provide a Hugging Face token in the 'HF Token' box or set HF_TOKEN in the environment."
-        return
-
     model_id = "openai/gpt-oss-20b"
-    client = InferenceClient(model=model_id, token=token)
+    client = InferenceClient(model=model_id, token=HF_TOKEN)
 
     response = ""
     for chunk in client.chat_completion(
@@ -118,7 +113,6 @@ demo = gr.ChatInterface(
     fn=respond,
     type="messages",
     additional_inputs=[
-        gr.Textbox(value=DEFAULT_SYSTEM_PROMPT, label="System Prompt"),
         gr.Slider(0, 500, value=50, step=10, label="Car km/week"),
         gr.Slider(0, 500, value=20, step=10, label="Bus km/week"),
         gr.Slider(0, 500, value=20, step=10, label="Train km/week"),
@@ -128,7 +122,7 @@ demo = gr.ChatInterface(
         gr.Slider(0, 21, value=7, step=1, label="Vegan meals/week"),
         gr.Checkbox(label="Use Local Model (google/gemma-3-270m-it)", value=False),
     ],
-    title="🌱 Sustainable.ai (gpt-oss-20b)",
+    title="🌱 Sustainable.ai",
     description=(
         "Chat with an AI that helps you understand and reduce your carbon footprint. "
         "Toggle 'Use Local Model' to run locally with google/gemma-3-270m-it, or leave it off "
