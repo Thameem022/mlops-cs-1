@@ -1,7 +1,13 @@
 import os
 import gradio as gr
 from huggingface_hub import InferenceClient
+from transformers import pipeline
 
+HF_TOKEN = os.getenv("HF_TOKEN")
+if not HF_TOKEN:
+    raise RuntimeError("HF_TOKEN not found. In Spaces, add it under Settings → Repository secrets.")
+
+login(token=HF_TOKEN)
 # --- Emissions factors --------------------------------------------------------
 EMISSIONS_FACTORS = {
     "transportation": {"car": 2.3, "bus": 0.1, "train": 0.04, "plane": 0.25},
@@ -23,9 +29,9 @@ def calculate_footprint(car_km, bus_km, train_km, air_km,
     )
     total_emissions = transport_emissions + food_emissions
     stats = {
-        "trees": round(total_emissions / 21),      
-        "flights": round(total_emissions / 500),     
-        "driving100km": round(total_emissions / 230) 
+        "trees": round(total_emissions / 21),
+        "flights": round(total_emissions / 500),
+        "driving100km": round(total_emissions / 230)
     }
     return total_emissions, stats
 
@@ -37,12 +43,14 @@ while keeping a supportive and positive tone. Prefer actionable steps over theor
 Reasoning: medium
 """
 
+# --- Local pipeline (initialized once) ----------------------------------------
+pipe = pipeline("text-generation", model="google/gemma-3-270m-it")
+
 # --- Chat callback ------------------------------------------------------------
 def respond(
     message,
     history: list[dict[str, str]],
-    hf_token_ui,          # from password textbox (optional)
-    system_message,       # from textbox
+    system_message,
     car_km,
     bus_km,
     train_km,
@@ -50,27 +58,8 @@ def respond(
     meat_meals,
     vegetarian_meals,
     vegan_meals,
+    use_local_model,   # checkbox
 ):
-    """
-    Streams a response from openai/gpt-oss-20b via Hugging Face Inference API.
-    Token priority: UI textbox > HF_TOKEN env var.
-    """
-    # Resolve token from UI or env
-    token = (hf_token_ui or "").strip() or (os.getenv("HF_TOKEN") or "").strip()
-    if not token:
-        yield "⚠️ Please provide a valid Hugging Face token in the 'HF Token' box or set HF_TOKEN in the environment."
-        return
-
-    # Correct, namespaced repo id
-    model_id = "openai/gpt-oss-20b"
-
-    # Build client
-    try:
-        client = InferenceClient(model=model_id, token=token)
-    except Exception as e:
-        yield f"Failed to initialize InferenceClient: {e}"
-        return
-
     # Compute personalized footprint summary
     footprint, stats = calculate_footprint(
         car_km, bus_km, train_km, air_km,
@@ -85,45 +74,50 @@ def respond(
         f"{system_message}"
     )
 
-    # Construct messages in OpenAI-style format; providers map this to the model's chat template.
-    messages = [{"role": "system", "content": custom_prompt}]
-    messages.extend(history or [])
-    messages.append({"role": "user", "content": message})
+    # Build chat context
+    chat_context = custom_prompt + "\n"
+    for turn in (history or []):
+        role, content = turn["role"], turn["content"]
+        chat_context += f"{role.upper()}: {content}\n"
+    chat_context += f"USER: {message}\nASSISTANT:"
 
-    # Stream from HF Inference API
-    try:
-        response = ""
-        for chunk in client.chat_completion(
-            messages,
-            max_tokens=3000,
-            temperature=0.7,
-            top_p=0.95,
-            stream=True,
-        ):
-            try:
-                # Some providers return choices[0].delta.content during streaming
-                if chunk.choices and getattr(chunk.choices[0], "delta", None):
-                    token_piece = chunk.choices[0].delta.content or ""
-                else:
-                    # Fallback: some providers may use 'message' at the end
-                    token_piece = getattr(chunk, "message", {}).get("content", "") or ""
-            except Exception:
-                token_piece = ""
-
-            if token_piece:
-                response += token_piece
-                yield response
-    except Exception as e:
-        # Common causes: 401 (bad token), 404 (wrong repo id), provider downtime
-        yield f"Inference error with '{model_id}': {e}\n"
+    # --- Local branch ---------------------------------------------------------
+    if use_local_model:
+        out = pipe(chat_context, max_new_tokens=300, do_sample=True)
+        yield out[0]["generated_text"]
         return
+
+    # --- Remote branch --------------------------------------------------------
+    token = (hf_token_ui or "").strip() or (os.getenv("HF_TOKEN") or "").strip()
+    if not token:
+        yield "⚠️ Please provide a Hugging Face token in the 'HF Token' box or set HF_TOKEN in the environment."
+        return
+
+    model_id = "openai/gpt-oss-20b"
+    client = InferenceClient(model=model_id, token=token)
+
+    response = ""
+    for chunk in client.chat_completion(
+        [{"role": "system", "content": custom_prompt}] + (history or []) + [{"role": "user", "content": message}],
+        max_tokens=3000,
+        temperature=0.7,
+        top_p=0.95,
+        stream=True,
+    ):
+        token_piece = ""
+        if chunk.choices and getattr(chunk.choices[0], "delta", None):
+            token_piece = chunk.choices[0].delta.content or ""
+        else:
+            token_piece = getattr(chunk, "message", {}).get("content", "") or ""
+        if token_piece:
+            response += token_piece
+            yield response
 
 # --- UI -----------------------------------------------------------------------
 demo = gr.ChatInterface(
     fn=respond,
-    type="messages",  # fixes 'tuples' deprecation warning
+    type="messages",
     additional_inputs=[
-        gr.Textbox(label="HF Token (prefer env var HF_TOKEN)", type="password", placeholder="hf_..."),
         gr.Textbox(value=DEFAULT_SYSTEM_PROMPT, label="System Prompt"),
         gr.Slider(0, 500, value=50, step=10, label="Car km/week"),
         gr.Slider(0, 500, value=20, step=10, label="Bus km/week"),
@@ -132,11 +126,13 @@ demo = gr.ChatInterface(
         gr.Slider(0, 21, value=7, step=1, label="Meat meals/week"),
         gr.Slider(0, 21, value=7, step=1, label="Vegetarian meals/week"),
         gr.Slider(0, 21, value=7, step=1, label="Vegan meals/week"),
+        gr.Checkbox(label="Use Local Model (google/gemma-3-270m-it)", value=False),
     ],
     title="🌱 Sustainable.ai (gpt-oss-20b)",
     description=(
         "Chat with an AI that helps you understand and reduce your carbon footprint. "
-        "Provide a Hugging Face token in the UI or via HF_TOKEN. Uses openai/gpt-oss-20b."
+        "Toggle 'Use Local Model' to run locally with google/gemma-3-270m-it, or leave it off "
+        "to call Hugging Face Inference API (gpt-oss-20b)."
     ),
 )
 
