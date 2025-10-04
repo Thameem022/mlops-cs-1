@@ -1,6 +1,6 @@
 import os
 import gradio as gr
-from huggingface_hub import InferenceClient
+from huggingface_hub import InferenceClient,login
 from transformers import pipeline
 
 HF_TOKEN = os.getenv("HF_TOKEN")
